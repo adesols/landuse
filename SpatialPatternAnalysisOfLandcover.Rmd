@@ -1,0 +1,185 @@
+---
+title: "Finding the most unique land cover spatial pattern between Nigeria and South Africa"
+author: "Ekundayo Adeleke"
+date: "2023-12-26"
+output: html_document
+---
+
+Reference: This was an originally article posted on Jakub Nowosad's (website)[https://jakubnowosad.com/posts/2023-12-03-motif-bp8/]
+
+Spatial signatures represent spatial patterns of land cover in a given area. Therefore, these tools can be utilized to identify regions exhibiting spatial patterns that are analogous to (a query region)[https://jakubnowosad.com/posts/2021-02-17-motif-bp3/] or (quantify changes in spatial patterns)[https://jakubnowosad.com/posts/2021-02-24-motif-bp4]. The approaches above are implemented as `lsp_search()` and `lsp_compare()` functions of the **motif** R package, respectively.
+
+It's feasible to develop customized workflows tailored to specific needs. This section will guide you through the process of contrasting the spatial patterns of two distinct areas to identify the most distinctive land cover spatial pattern.
+
+## Working with Spatial Data
+
+To follow the steps in this discussion, you'll need to acquire all the necessary datasets. The following code will enable you to download these datasets that are currently available from the `osfr` package:
+
+
+```{r echo=FALSE}
+library(here)
+library(osfr)
+data_path = here("raw_data","data")
+dir.create(data_path)
+osf_retrieve_node("xykzv") |>
+        osf_ls_files(n_max = Inf) |>
+        osf_download(path = data_path,
+                     conflicts = "skip")
+```
+You should also attach the following packages:
+```{r}
+library(sf)
+library(terra)
+library(motif)
+library(tidyverse)
+library(readr)
+library(cluster)
+```
+
+## Land cover Analysis in Africa
+
+The file `data/land_cover.tif` holds the land cover data specific to Africa. This is a categorical raster with a resolution of 300-meter. To analyze this data in R, you can load it using the `rast()` function.
+```{r}
+lc = rast(here("raw_data","data","land_cover.tif"))
+```
+Furthermore, the file `data/lc_palette.csv` provides details regarding the labels and colors associated with each land cover category.
+```{r}
+lc_palette_df = read.csv(here("raw_data","data","lc_palette.csv"))
+```
+This file will be utilized to incorporate both labels and colors into the raster object:
+```{r}
+levels(lc) = lc_palette_df[c("value", "label")]
+coltab(lc) = lc_palette_df[c("value", "color")]
+tiff(here("documentation","lc_africa.tiff"))
+plot(lc)
+#dev.off()
+```
+
+## Analysis of spatial patterns between two regions
+
+Initially, we must select the specific areas whose spatial patterns we aim to compare. As an illustrative example, let's focus on two African nations: Nigeria and South Africa. Utilizing the `rnaturalearth` package, we can download the geographical data for these countries. This data will then be used to crop the `lc` raster object according to the boundaries of these nations.
+```{r}
+library(rnaturalearth)
+# download Nigeria
+nigeria = ne_countries(country = "Nigeria", returnclass = "sf") |>
+  select(name) |>
+  st_transform(crs = st_crs(lc))
+# download South Africa
+southafrica = ne_countries(country = "South Africa", returnclass = "sf") |>
+  select(name) |>
+  st_transform(crs = st_crs(lc))
+#crop
+lc_nigeria = crop(lc, nigeria, mask = TRUE)
+lc_southafrica = crop(lc, southafrica, mask = TRUE)
+# plot
+plot(lc_nigeria)
+plot(lc_southafrica)
+```
+The land cover in these countries exhibit notable differences. Let's proceed to compare and analyze these variations.
+```{r}
+lc_nigeria_composition = lsp_signature(lc_nigeria, type = "composition", classes = 1:9)
+lc_southafrica_composition = lsp_signature(lc_southafrica, type = "composition", classes = 1:9)
+round(lc_nigeria_composition$signature[[1]], 2)
+round(lc_southafrica_composition$signature[[1]], 2)
+```
+We can further explore their spatial patterns, including both composition and configuration, by calculating the "cove" signature for each country.
+```{r}
+lc_nigeria_cove = lsp_signature(lc_nigeria, type = "cove", classes = 1:9)
+lc_southafrica_cove = lsp_signature(lc_southafrica, type = "cove", classes = 1:9)
+```
+Subsequently, we can compare these "cove" signatures using various dissimilarity metrics. The `philentropy` package in R offers a broad spectrum of these measures, one of which is the Jensen-Shannon divergence. We'll apply this specific measure to evaluate the dissimilarity between the spatial patterns of Nigeria and South Africa, as characterized by their "cove" signatures.
+```{r}
+library(philentropy)
+dist_cove = dist_one_one(lc_nigeria_cove$signature[[1]], 
+                         lc_southafrica_cove$signature[[1]], 
+                         method = "jensen-shannon")
+dist_cove
+```
+This calculated value, being relatively low (around 0.3), suggests that the overall spatial patterns of Nigeria and South Africa are quite similar.
+
+## Analyzing Local Spatial Patterns
+
+Further, we can delve into the local spatial patterns within Nigeria and South Africa. For this analysis, we'll focus on a smaller scale, specifically examining areas of 100 by 100 cells, which equates to a region of 30 by 30 kilometers:
+```{r}
+lc_nigeria_cove100 = lsp_signature(lc_nigeria, type = "cove",
+                                    window = 100, classes = 1:9)
+lc_southafrica_cove100 = lsp_signature(lc_southafrica, type = "cove", 
+                                 window = 100, classes = 1:9)
+```
+To contrast these local spatial pattern signatures, we can compute the Jensen-Shannon divergence for every corresponding pair of signatures from the two datasets. This calculation can be performed using the `dist_many_many()` function found in the **`philentropy`** package. This function requires two matrices as inputs for the comparison.
+```{r}
+lc_nigeria_cove100_mat = do.call(rbind, lc_nigeria_cove100$signature)
+lc_southafrica_cove100_mat = do.call(rbind, lc_southafrica_cove100$signature)
+dist_cove_100 = dist_many_many(lc_nigeria_cove100_mat, 
+                               lc_southafrica_cove100_mat, 
+                               method = "jensen-shannon")
+```
+The outcome of this analysis is a matrix displaying the Jensen-Shannon divergence values for each pair of areas in Nigeria and South Africa. In this matrix, the rows correspond to areas in Nigeria, while the columns are indicative of areas in South Africa. Lower values in this matrix signify greater similarity in spatial patterns between the compared areas, whereas higher values denote greater dissimilarity. This matrix reveals that there are certain areas in both countries with closely matching spatial patterns, with some areas being nearly identical, considering the scale/resolution of the source data and the scope, including the number and variety of land cover categories involved.
+```{r}
+summary(c(dist_cove_100))
+```
+To pinpoint the identifiers of the most dissimilar areas, one can employ the `which()` function in R. For instance, this approach can reveal that area `702` in Nigeria and area `1` in South Africa exhibit highly dissimilar spatial patterns.
+```{r}
+#most dissimilar
+head(which(dist_cove_100 > 0.523623, arr.ind = TRUE))
+#most similar
+head(which(dist_cove_100 <= 0.001163, arr.ind = TRUE))
+```
+To enhance the `lc_nigeria_cove100` and `lc_southafrica_cove100` objects with spatial information, we can utilize the `lsp_add_sf()` function. This addition allows for the visualization of specific areas by cropping the land cover data according to these newly augmented objects. In this scenario, it's observed that both areas are predominantly forest-covered. However, it's worth noting that the second area is situated near a border, resulting in the presence of some NA values due to this geographical positioning.
+```{r}
+lc_nigeria_cove100_sf = lsp_add_sf(lc_nigeria_cove100)
+lc_southafrica_cove100_sf = lsp_add_sf(lc_southafrica_cove100)
+plot(crop(lc_nigeria, lc_nigeria_cove100_sf[702, ]), main = "Nigeria")
+plot(crop(lc_southafrica, lc_southafrica_cove100_sf[1, ]), main = "South Africa")
+```
+## Categorizing Areas Based on Similar Local Spatial Patterns
+
+To classify areas that exhibit analogous local spatial patterns of land cover, the `pam()` function from the **cluster** package can be effectively used. In this example, we will segment the areas into six distinct groups.
+```{r}
+my_pam = pam(rbind(lc_nigeria_cove100_mat, lc_southafrica_cove100_mat), 6)
+```
+Following this, we can integrate the clustering outcomes into the spatial object. This is achieved by naming both existing sf (simple features) objects, merging them into a single entity, and then appending the clustering results as a new column to this unified spatial object.
+```{r}
+lc_nigeria_cove100_sf$name = "Nigeria"
+lc_southafrica_cove100_sf$name = "South Africa"
+lc_cove100_sf = rbind(lc_nigeria_cove100_sf, lc_southafrica_cove100_sf)
+lc_cove100_sf$k = as.factor(my_pam$clustering)
+```
+
+## The results from this analysis can be visualized as follows:
+```{r}
+plot(subset(lc_cove100_sf, name == "Nigeria")["k"], pal = palette.colors, main = "Nigeria")
+plot(subset(lc_cove100_sf, name == "South Africa")["k"],  pal = palette.colors, main = "South Africa")
+```
+It becomes evident quite rapidly that the clusters ranging from the 1st to the 6th exhibit distinct differences in both countries.
+
+We can examine the representative areas of each cluster by selecting subsets from the `lc_cove100_sf` object. This selection is based on the `id.med` column from the `my_pam` object.
+```{r}
+lc_cove100_sf_subset = lc_cove100_sf[my_pam$id.med, ]
+for (i in seq_len(nrow(lc_cove100_sf_subset))){
+  plot(crop(lc, lc_cove100_sf_subset[i, ]), main = i)
+}
+```
+## Identifying the Most Distinctive Land Cover Spatial Pattern
+The `dist_cove_100` object holds the Jensen-Shannon divergence values for each pair of areas across Nigeria and South Africa, with rows corresponding to Nigerian areas and columns to South African areas. Typically, this data might be utilized to identify the most similar areas (those with the smallest divergence). However, in this case, our focus will be on pinpointing the most unique areas.
+
+This can be done in two steps: 
+* Initially, we must determine the smallest value in each row and column. This can be achieved by employing the apply() function. This step enables us to ascertain the minimum divergence between each area in Nigeria and South Africa. Essentially, it helps us understand the level of dissimilarity of an area in one country compared to its most similar counterpart in the other country.
+```{r}
+lc_nigeria_cove100_sf$min_dist = apply(dist_cove_100, 1, min)
+plot(lc_nigeria_cove100_sf["min_dist"], main = "Nigeria")
+lc_southafrica_cove100_sf$min_dist = apply(dist_cove_100, 2, min)
+plot(lc_southafrica_cove100_sf["min_dist"], main = "South Africa")
+```
+* Next, we can identify the most unique area in Nigeria by locating the area with the highest value in the `lc_nigeria_cove100_sf$min_dist` column. Similarly, the most unique area in South Africa can be found by identifying the highest value in the `lc_southafrica_cove100_sf$min_dist` column. Put simply, these areas are the ones that show the greatest dissimilarity compared to any area in the other country.
+```{r}
+most_unique_nigeria = lc_nigeria_cove100_sf[which.max(lc_nigeria_cove100_sf$min_dist), ]
+plot(crop(lc_nigeria, most_unique_nigeria), main = "Nigeria")
+most_unique_southafrica = lc_southafrica_cove100_sf[which.max(lc_southafrica_cove100_sf$min_dist), ]
+plot(crop(lc_southafrica, most_unique_southafrica), main = "South Africa")
+```
+For Nigeria, the most unique area identified is characterized by a mosaic of agricultural land interspersed with water bodies. In South Africa, the most distinctive area is predominantly sparse vegetation, with smaller patches of shrubland, grassland, and forest. Notably, both of these unique areas are situated near the central regions of their respective countries.1
+
+## Summary
+
+In this article, we've explored the process of comparing land cover spatial patterns in two distinct areas. Additionally, the article demonstrated how to identify the most unique land cover spatial pattern, encouraging readers to try and find the most unique area in their own country compared to the rest of the world. This methodology is applicable not just for identifying unique spatial land cover patterns, but also for any other categorical raster data. For further insights and applications of the motif package, you can refer to other blog posts in the (“motif”)[https://jakubnowosad.com/posts.html#category=motif] category.
